@@ -44,12 +44,16 @@ svg{flex:none}
 .nav a[aria-current=page]{color:var(--blue)}
 .badge{position:absolute;top:3px;left:calc(50% + 6px);min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--red);color:#fff;font-size:12px;font-style:normal;font-weight:700;line-height:18px;text-align:center}
 .brand,.navfoot{display:none}
+.nav::after{content:"";position:absolute;left:0;right:0;top:100%;height:120px;background:inherit;-webkit-backdrop-filter:inherit;backdrop-filter:inherit}
+html,body{background:var(--bg)}
+@media(max-width:899px){html{background:var(--panel)}}
 main{padding-bottom:calc(84px + var(--sab))}
 .pg{max-width:1180px;margin:0 auto;padding:0 max(16px,var(--sar)) 8px max(16px,var(--sal))}
 .pg.narrow{max-width:760px}
 @media(min-width:900px){
   .app{display:grid;grid-template-columns:236px minmax(0,1fr)}
   .nav{position:sticky;top:0;height:100vh;height:100dvh;flex-direction:column;gap:2px;padding:22px 12px;border-top:0;border-right:1px solid var(--line);background:var(--panel2);-webkit-backdrop-filter:none;backdrop-filter:none}
+  .nav::after{display:none}
   .nav a{flex:none;flex-direction:row;justify-content:flex-start;gap:12px;min-height:42px;padding:0 12px;font-size:15px;font-weight:600;color:var(--ink)}
   .nav a svg{width:21px;height:21px;color:var(--blue)}
   .nav a[aria-current=page]{background:var(--bsoft);color:var(--blue)}
@@ -409,7 +413,7 @@ function normalize() {
   inval();
   if (!S.meta) S.meta = defaultMeta();
   fillDefaults(S.meta, defaultMeta());
-  S.tasks ||= {}; S.results ||= {}; S.days ||= {};
+  S.tasks ||= {}; S.results ||= {}; S.days ||= {}; S.tomb ||= {};
   for (const t of Object.values(S.tasks)) { t.tags ||= []; t.movedFrom ||= []; }
 }
 
@@ -520,11 +524,14 @@ function commit(opts = {}) {
 }
 function setSync(m) { syncMode = m; const el = $('#syncState'); if (el) { el.textContent = syncLabel(); el.dataset.m = m; } }
 function syncLabel() {
+  if (!col && gistOn()) return { connecting: 'Подключаюсь к GitHub…', synced: 'Синхронизировано', saving: 'Сохраняю…', offline: 'Нет связи — сохраню позже', error: 'Ошибка синхронизации' }[syncMode] || '';
   return { connecting: 'Подключение…', synced: 'Синхронизировано', saving: 'Сохраняю…', offline: 'Нет связи — сохраню позже', local: 'Только на этом устройстве', error: 'Синхронизация недоступна' }[syncMode] || '';
 }
 function flush() {
+  S.tomb ||= {};
+  for (const key of dirty) if (key !== 'meta' && !keyGet(key)) S.tomb[key] = Date.now();
   clearTimeout(cacheT); cacheT = setTimeout(cacheSave, 50);
-  if (!col) return;
+  if (!col) { if (typeof gistOn === 'function' && gistOn()) { dirty.clear(); gistSchedule(); } return; }
   for (const key of [...dirty]) {
     if (inflight.has(key)) continue;
     dirty.delete(key); inflight.add(key);
@@ -600,7 +607,9 @@ async function initSync() {
       clearTimeout(timer); col = null; setSync(err && err.code === 'revoked' ? 'local' : 'error'); ready();
     });
   } catch (e) {
-    clearTimeout(timer); col = null; setSync('local'); ready();
+    clearTimeout(timer); col = null;
+    if (gistOn()) { setSync('connecting'); await Promise.race([gistPull(), new Promise(r => setTimeout(r, 8000))]); ready(); }
+    else { setSync('local'); ready(); }
   }
 }
 
@@ -613,13 +622,13 @@ function tplFor(D) {
 }
 function genDay(D) {
   if (S.days[D]?.gen) return false;
-  S.days[D] = { ...(S.days[D] || {}), date: D, gen: true }; touch('d_' + D);
+  S.days[D] = { ...(S.days[D] || {}), date: D, gen: true }; touch('d_' + D); if (!S.days[D].off) S.days[D].u = 1;
   tplFor(D).forEach((t, i) => {
     const id = D + '_' + t.id;
     if (S.tasks[id]) return;
     S.tasks[id] = mkTask({ id, title: t.title, sourceId: t.sourceId, subId: t.subId || '', skill: t.skill || '', tags: [...(t.tags || [])], url: t.url || '',
       plannedMin: +t.minutes || 0, date: D, status: 'planned', tplId: t.id, kind: t.kind || '', order: (i + 1) * 10 });
-    touch('t_' + id);
+    touch('t_' + id); S.tasks[id].u = 1; // untouched template copy: any real change on another device wins
   });
   return true;
 }
@@ -1202,7 +1211,9 @@ function vPrefs() {
     <h2 class="gh">Напоминания</h2><div class="group"><button class="it chev" data-act="reminders"><span class="itx"><b>Настроить напоминания</b><span class="sub">${remSummary()}</span></span></button></div>
     ${macPrefs() ? `<h2 class="gh">Mac</h2><div class="group" id="macGroup">${macPrefs()}</div>` : ''}
     <h2 class="gh">Данные</h2><div class="group">
-      <div class="it"><span class="itx">Синхронизация <span class="sync" data-m="${syncMode}">${syncLabel()}</span><span class="sub">${col ? 'iPhone и Mac видят одни и те же данные' : 'Сейчас данные сохраняются только в этом браузере'}</span></span></div>
+      ${col ? `<div class="it"><span class="itx">Синхронизация <span class="sync" data-m="${syncMode}">${syncLabel()}</span><span class="sub">iPhone и Mac видят одни и те же данные</span></span></div>`
+  : gistOn() ? `<div class="it"><span class="itx">Синхронизация iPhone ↔ Mac <span class="sync" data-m="${syncMode}">${syncLabel()}</span><span class="sub">Через приватный gist в твоём GitHub${gistLast ? ' · обновлено ' + new Date(gistLast).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : ''}</span></span><button class="btn sm line" data-act="gistNow">Обновить</button></div><button class="it danger" data-act="gistOff"><span class="itx">Отключить синхронизацию на этом устройстве</span></button>`
+  : `<button class="it chev" data-act="gistSetup"><span class="itx"><b>Синхронизация iPhone ↔ Mac</b><span class="sub">Выключена — данные только на этом устройстве. Подключи GitHub, чтобы прогресс был общим</span></span></button>`}
       <button class="it chev" data-act="exportCsv"><span class="itx">Экспорт истории в CSV</span></button>
       <button class="it chev" data-act="exportRes"><span class="itx">Экспорт результатов в CSV</span></button>
       <button class="it chev" data-act="backup"><span class="itx">Резервная копия (JSON)</span></button>
@@ -1320,6 +1331,7 @@ function sheetOnboard() {
     <label class="field"><span>Цель — общий балл</span><select name="target">${bandOpts(st.target)}</select></label></div>
     <h3 class="ch">Стартовая структура</h3><div class="obl">${prev}</div>
     <p class="fine">Engnovate чередует секции: Listening + Reading — Пн, Ср, Пт, Вс; Writing + Speaking — Вт, Чт, Сб. Видео IELTS Advantage и English Pro Tips — через день. Grammar и prep.gg — ежедневно. Это около 4 часов в день.</p>
+    <div class="ucard"><b>Уже занимаешься на другом устройстве?</b><span class="sub">Подключи синхронизацию — прогресс загрузится сюда.</span><div class="acts"><button class="btn sm line" data-act="gistSetup">Подключить синхронизацию</button></div></div>
     <div class="acts end"><button class="btn line" data-act="ctx" data-fn="empty">Начать с пустого</button><button class="btn pri" data-act="ctx" data-fn="go">Создать план</button></div>`,
   ctx: {
     go: () => { obApply(true); },
@@ -2062,6 +2074,108 @@ setInterval(() => {
   macSync(); macTick();
 }, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && isReady && today() !== lastDay) { runDaily(); render(); } });
+
+
+
+// ================= GitHub gist sync (standalone version) =================
+const GIST_FILE = 'ielts-tracker-data.json', GIST_DESC = 'IELTS tracker data (private)';
+let gistCfg = {}, gistLast = 0, gistT = 0, gistBusy = null;
+try { gistCfg = JSON.parse(localStorage.getItem('ielts-gist') || '{}'); } catch (e) { gistCfg = {}; }
+function gistOn() { return !!(gistCfg && gistCfg.token && gistCfg.id); }
+async function gh(path, opt = {}) {
+  const r = await fetch('https://api.github.com' + path, { ...opt, cache: 'no-store', headers: { Authorization: 'Bearer ' + gistCfg.token, Accept: 'application/vnd.github+json', ...(opt.body ? { 'Content-Type': 'application/json' } : {}) } });
+  if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+  return r.json();
+}
+function rGet(R, key) {
+  if (key === 'meta') return R.meta;
+  const p = key.slice(0, 2), id = key.slice(2);
+  return p === 't_' ? R.tasks?.[id] : p === 'r_' ? R.results?.[id] : p === 'd_' ? R.days?.[id] : undefined;
+}
+function rKeys(R) { return ['meta', ...Object.keys(R.tasks || {}).map(i => 't_' + i), ...Object.keys(R.results || {}).map(i => 'r_' + i), ...Object.keys(R.days || {}).map(i => 'd_' + i)]; }
+// Merge a remote snapshot into S, entity by entity (newest wins, deletions via tombstones). Returns [localChanged, needPush].
+function mergeRemote(R) {
+  let ch = false, push = false;
+  const tomb = { ...(S.tomb || {}) };
+  for (const [k, t] of Object.entries(R.tomb || {})) tomb[k] = Math.max(tomb[k] || 0, t);
+  for (const k of Object.keys(R.tomb || {})) if (!(S.tomb || {})[k]) ch = true;
+  for (const k of Object.keys(S.tomb || {})) if (!(R.tomb || {})[k]) push = true;
+  const keys = new Set([...allKeys(), ...rKeys(R)]);
+  for (const key of keys) {
+    const l = keyGet(key), r = rGet(R, key), t = tomb[key] || 0;
+    const lu = l ? (l.u || 0) : -1, ru = r ? (r.u || 0) : -1;
+    if (key !== 'meta' && t && Math.max(lu, ru) <= t) { if (l) { keyDel(key); ch = true; } if (r) push = true; continue; }
+    if (ru > lu) { keyPut(key, clone(r)); ch = true; }
+    else if (lu > ru) push = true;
+  }
+  const cut = Date.now() - 90 * 864e5;
+  for (const k in tomb) if (tomb[k] < cut) delete tomb[k];
+  S.tomb = tomb;
+  return [ch, push];
+}
+function gistPayload() { return JSON.stringify({ app: 'ielts-tracker', v: 1, saved: new Date().toISOString(), data: S }); }
+async function gistRead() {
+  const g = await gh('/gists/' + gistCfg.id);
+  const f = g.files?.[GIST_FILE]; if (!f) return null;
+  let txt = f.content;
+  if (f.truncated) txt = await (await fetch(f.raw_url, { cache: 'no-store' })).text();
+  try { return JSON.parse(txt).data || null; } catch (e) { return null; }
+}
+async function gistSync(forcePush) {
+  if (!gistOn()) return;
+  if (gistBusy) { gistBusy.again = true; return; }
+  gistBusy = { again: false };
+  setSync('saving');
+  try {
+    const R = await gistRead();
+    let ch = false, push = !!forcePush;
+    if (R) { const m = mergeRemote(R); ch = m[0]; push = push || m[1]; } else push = true;
+    if (push) await gh('/gists/' + gistCfg.id, { method: 'PATCH', body: JSON.stringify({ files: { [GIST_FILE]: { content: gistPayload() } } }) });
+    gistLast = Date.now(); setSync('synced');
+    if (ch) { normalize(); if (isReady) runDaily(); cacheSave(); render(); macSync(); if (isReady && S.meta.settings.onboarded && layerOpen() && $('#sheet [data-fn="go"]')) hideLayer(); }
+  } catch (e) {
+    setSync(e.status === 401 || e.status === 404 ? 'error' : 'offline');
+    if (e.status === 401) toast('GitHub отклонил токен — подключи синхронизацию заново');
+  } finally {
+    const again = gistBusy.again; gistBusy = null;
+    if (again) gistSchedule(300);
+  }
+}
+function gistPull() { return gistSync(false); }
+function gistSchedule(ms = 1500) { clearTimeout(gistT); gistT = setTimeout(() => gistSync(true), ms); }
+setInterval(() => { if (gistOn() && !document.hidden && !gistBusy) gistSync(false); }, 45000);
+document.addEventListener('visibilitychange', () => { if (gistOn() && !document.hidden) gistSync(false); });
+window.addEventListener('online', () => { if (gistOn()) gistSync(true); });
+function sheetGist() {
+  return { title: 'Синхронизация iPhone ↔ Mac', body: `<p class="lead">Прогресс хранится в приватном gist в твоём аккаунте GitHub. На iPhone и на Mac нужно ввести один и тот же токен — второе устройство само найдёт данные.</p>
+    <div class="ucard"><b>1. Создай токен</b><span class="sub">Открой ссылку, войди в GitHub, срок действия — «No expiration», оставь только галочку <b>gist</b> и нажми «Generate token».</span>
+    <div class="acts"><a class="btn sm line" href="https://github.com/settings/tokens/new?scopes=gist&description=IELTS%20tracker" target="_blank" rel="noopener">${IC.ext} Создать токен на GitHub</a></div></div>
+    <div class="ucard"><b>2. Вставь токен сюда</b><span class="sub">Он хранится только на этом устройстве и даёт доступ лишь к твоим gist.</span>
+    <label class="field"><span>Токен</span><input name="tok" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="ghp_…"></label></div>
+    <div class="acts end"><button class="btn pri" data-act="ctx" data-fn="go">Подключить</button></div>`,
+  ctx: { go: async el => {
+    const sh = $('#sheet'), tok = val(sh, 'tok');
+    if (!/^(ghp_|github_pat_|gho_)[A-Za-z0-9_]{20,}$/.test(tok)) { fieldErr(sh, 'tok', 'Это не похоже на токен GitHub'); return; }
+    el.disabled = true; el.textContent = 'Подключаю…';
+    gistCfg = { token: tok };
+    try {
+      const list = await gh('/gists?per_page=100');
+      const found = list.find(g => g.files && g.files[GIST_FILE]);
+      if (found) gistCfg.id = found.id;
+      else { const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: GIST_DESC, public: false, files: { [GIST_FILE]: { content: gistPayload() } } }) }); gistCfg.id = g.id; }
+      localStorage.setItem('ielts-gist', JSON.stringify(gistCfg));
+      await gistSync(false);
+      if (!found) await gistSync(true);
+      hideLayer(); render(); toast(found ? 'Подключено — данные загружены' : 'Подключено — теперь подключи второе устройство');
+    } catch (e) {
+      gistCfg = {}; el.disabled = false; el.textContent = 'Подключить';
+      fieldErr(sh, 'tok', e.status === 401 ? 'GitHub не принял токен' : e.status === 403 || e.status === 404 ? 'У токена нет доступа к gist — включи галочку gist' : 'Нет связи с GitHub, попробуй ещё раз');
+    }
+  } } };
+}
+ACT.gistSetup = () => pushSheet(sheetGist);
+ACT.gistNow = () => gistSync(true);
+ACT.gistOff = () => pushSheet(() => sheetConfirm('Отключить синхронизацию?', 'Данные останутся на этом устройстве и в GitHub, но перестанут обновляться здесь.', 'Отключить', () => { gistCfg = {}; try { localStorage.removeItem('ielts-gist'); } catch (e) { /* ignore */ } setSync('local'); hideLayer(); render(); }));
 
 (function boot() {
   const h = location.hash.slice(1); if (TABS.some(t => t.id === h)) tab = h;
