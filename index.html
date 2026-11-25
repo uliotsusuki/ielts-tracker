@@ -48,6 +48,7 @@ svg{flex:none}
 html,body{background:var(--bg)}
 @media(max-width:899px){html{background:var(--panel)}.nav{background:var(--panel);-webkit-backdrop-filter:none;backdrop-filter:none}}
 main{padding-bottom:calc(84px + var(--sab))}
+.app{min-height:100vh;min-height:100dvh}
 .pg{max-width:1180px;margin:0 auto;padding:0 max(16px,var(--sar)) 8px max(16px,var(--sal))}
 .pg.narrow{max-width:760px}
 @media(min-width:900px){
@@ -2184,6 +2185,31 @@ ACT.gistOff = () => pushSheet(() => sheetConfirm('Отключить синхр�
   initSync();
   initMac();
   capUse('downloads').then(d => { DL = d; });
+})();
+
+// ================= iOS standalone viewport fix =================
+// iOS home-screen apps shrink the viewport by ~59px after the keyboard or a picker closes,
+// lifting the tab bar and leaving a dead band below it. Force WebKit to re-measure.
+(function iosViewportFix() {
+  const standalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  if (!standalone) return;
+  let peak = window.innerHeight;
+  const expected = () => Math.max(peak, window.matchMedia('(orientation: portrait)').matches ? screen.height : screen.width);
+  function recover() {
+    if (expected() - window.innerHeight <= 4) return;
+    const app = $('.app'); if (!app) return;
+    const y = window.scrollY;
+    app.style.display = 'none'; void app.offsetHeight; app.style.display = '';
+    const nav = $('#nav'); if (nav) { nav.style.display = 'none'; void nav.offsetHeight; nav.style.display = ''; }
+    window.scrollTo(0, y);
+  }
+  const later = () => { setTimeout(recover, 150); setTimeout(recover, 600); };
+  window.addEventListener('resize', () => { peak = Math.max(peak, window.innerHeight); later(); });
+  document.addEventListener('focusout', later);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) later(); });
+  window.addEventListener('orientationchange', () => { peak = 0; later(); });
+  document.addEventListener('click', e => { if (e.target.closest('[data-act="closeAll"],[data-act="back"],.backdrop,[data-act="ctx"]')) later(); }, true);
+  later();
 })();
 
 }
